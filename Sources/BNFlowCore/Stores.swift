@@ -71,7 +71,7 @@ public enum HistoryLogic {
         let total = items.reduce(0) { $0 + $1.wordCount }
         let weekAgo = now.addingTimeInterval(-7 * 86400)
         let week = items.filter { $0.date >= weekAgo }.reduce(0) { $0 + $1.wordCount }
-        let dictated = items.filter { $0.kind == .dictation && $0.durationSeconds > 1 }
+        let dictated = items.filter { $0.kind == .dictation && $0.durationSeconds > 1 && $0.status.countsTowardPace }
         let words = dictated.reduce(0) { $0 + TextStats.wordCount($1.rawText) }
         let secs = dictated.reduce(0) { $0 + $1.durationSeconds }
         let wpm = secs > 0 ? Int((Double(words) / (secs / 60)).rounded()) : 0

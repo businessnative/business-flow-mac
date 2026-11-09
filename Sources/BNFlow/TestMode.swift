@@ -36,6 +36,8 @@ enum TestMode {
     static var transcript = "Holnap délután átküldöm az ajánlatot."
     static var chatReply = "Rendben."
     static var failNetwork = false
+    /// A beillesztés sikertelen: a szöveg nem kerül a mezőbe (vágólap / előzmény marad).
+    static var failPaste = false
     /// Elakadt hálózat szimulálása: a csonk nem válaszol (az őröknek kell megszakítaniuk).
     static var hangNetwork = false
     static var requests: [String] = []

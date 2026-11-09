@@ -158,6 +158,7 @@ enum SelfTest {
         TestMode.events = []
         TestMode.requests = []
         TestMode.failNetwork = false
+        TestMode.failPaste = false
         TestMode.hangNetwork = false
         DictationController.processingTimeout = 45
         TestMode.chatReply = "Rendben."
@@ -362,12 +363,28 @@ enum SelfTest {
         let learned = await waitFor(3) { m.settings.dictionary.contains { $0.term == "Petrát" && $0.autoLearned } }
         check("automatikus tanulás kézi javításból", learned, via: "controller", m.settings.dictionary.map(\.term).joined(separator: ", "))
 
-        // Hálózati hiba → újrapróbálás
+        // Beillesztés sikertelen: a szöveg előzményben, vágólapon és az utolsó átiratban megmarad.
+        let keptBeforePasteFail = m.lastText
+        TestMode.failPaste = true
+        TestMode.fieldValue = ""
+        TestMode.pasteboard.clearContents()
+        _ = await dictate(d, transcript: "A mezőbe nem került be ez a mondat.")
+        let pasteRow = m.history.first
+        check("beillesztés hibája: a szöveg előzményben marad", pasteRow?.status == .pasteFailed && pasteRow?.text.contains("nem került") == true && pasteRow?.canCopy == true, via: "controller", "\(pasteRow?.status.rawValue ?? "-")")
+        check("beillesztés hibája: utolsó átirat és vágólap", m.lastText?.contains("nem került") == true && TestMode.pasteboard.string(forType: .string)?.contains("nem került") == true && !TestMode.fieldValue.contains("nem került"), via: "controller")
+        TestMode.failPaste = false
+        _ = keptBeforePasteFail
+
+        // Hálózati hiba → újrapróbálás. Az üres hiba nem írhatja felül a megmaradt szöveget.
+        let kept = m.lastText
         TestMode.failNetwork = true
         TestMode.fieldValue = ""
         _ = await dictate(d, transcript: "Újrapróbált mondat.")
+        let failedRow = m.history.first
         check("hálózati hiba → hibaüzenet a sávon", m.bar.isError || d.controller.lastFailedAudio != nil, via: "controller", "\(m.bar)")
-        check("sikertelen felvétel megmarad", d.controller.lastFailedAudio != nil, via: "controller")
+        check("sikertelen felvétel megmarad", d.controller.lastFailedAudio != nil && failedRow?.status == .failed && failedRow?.canRetry == true, via: "controller", failedRow?.failureReason ?? "")
+        check("sikertelen átírás nem törli az utolsó szöveget", m.lastText == kept, via: "controller")
+        check("a hiba oka nem tartalmaz kulcsot", failedRow?.failureReason?.contains("sk-") != true, via: "controller", failedRow?.failureReason ?? "")
         TestMode.failNetwork = false
 
         // Kulcs nélkül
@@ -390,7 +407,7 @@ enum SelfTest {
         let m = d.model
         var menu = d.menuBar.buildMenu()
         let titles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
-        check("menüpontok", titles.count == 10 && titles.contains { $0.hasPrefix("Névjegy") }, via: "menu", titles.joined(separator: " | "))
+        check("menüpontok", titles.count == 11 && titles.contains { $0.hasPrefix("Névjegy") } && titles.contains("Utolsó átirat másolása"), via: "menu", titles.joined(separator: " | "))
 
         m.hubSection = .settings
         if let i = item(menu, "Business Flow megnyitása") { menu.performActionForItem(at: i) }
@@ -401,12 +418,17 @@ enum SelfTest {
         menu = d.menuBar.buildMenu()
         if let i = item(menu, "Utolsó felvétel újrapróbálása") {
             let enabled = menu.items[i].isEnabled
+            let failedID = m.history.first { $0.canRetry }?.id
             TestMode.fieldValue = ""
             TestMode.transcript = "Újrapróbált mondat."
             menu.performActionForItem(at: i)
             await settle(300)
             _ = await waitFor(5) { isIdleOrDone(m) }
             check("Utolsó felvétel újrapróbálása", enabled && TestMode.fieldValue.contains("Újrapróbált") && d.controller.lastFailedAudio == nil, via: "menu", "enabled=\(enabled) mező=\(TestMode.fieldValue.count)")
+            if let failedID {
+                let row = m.history.first { $0.id == failedID }
+                check("újrapróbálás ugyanazt a sort frissíti", row?.status == .success && row?.text.contains("Újrapróbált") == true && row?.canCopy == true, via: "menu", row?.status.rawValue ?? "-")
+            }
             menu = d.menuBar.buildMenu()
             check("újrapróbálás után a menüpont letiltva", item(menu, "Utolsó felvétel").map { !menu.items[$0].isEnabled } ?? false, via: "menu")
         } else { check("Utolsó felvétel újrapróbálása", false, via: "menu", "nincs menüpont") }
@@ -416,6 +438,11 @@ enum SelfTest {
             menu.performActionForItem(at: i)
             await settle(200)
             check("Utolsó átirat beillesztése", menu.items[i].isEnabled && !TestMode.fieldValue.isEmpty && TestMode.fieldValue.contains(m.lastText ?? "\u{0}"), via: "menu")
+        }
+        if let i = item(menu, "Utolsó átirat másolása") {
+            TestMode.pasteboard.clearContents()
+            menu.performActionForItem(at: i)
+            check("Utolsó átirat másolása", menu.items[i].isEnabled && TestMode.pasteboard.string(forType: .string) == m.lastText, via: "menu")
         }
 
         // Polírozás almenü — minden utasítás

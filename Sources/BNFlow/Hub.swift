@@ -239,22 +239,33 @@ struct HistoryRow: View {
         HStack(alignment: .top, spacing: 16) {
             Text(item.date, style: .time).font(BN.mono(12, .light)).foregroundColor(BN.textWeak).frame(width: 48, alignment: .leading)
             VStack(alignment: .leading, spacing: 4) {
-                Text(showRaw ? item.rawText : item.text).font(BN.body3).foregroundColor(BN.textStrong).textSelection(.enabled)
+                Text(bodyText).font(BN.body3).foregroundColor(hasTranscript ? BN.textStrong : BN.textMedium).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                if hasTranscript, let reason = item.failureReason, item.status != .success {
+                    Text(reason).font(BN.sans(12)).foregroundColor(BN.textMedium).fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 6) {
                     BNLabel(kindLabel, size: 10, color: BN.textWeak)
+                    if item.status != .success { BNBadge(item.status.label, color: item.status == .pasteFailed ? BN.warning : BN.error) }
                     Text("· \(item.appName)").font(BN.sans(11)).foregroundColor(BN.textWeak)
                 }
             }
             Spacer()
             // A gombok mindig a nézetfában vannak (billentyűzet, VoiceOver, önteszt), csak hoverkor látszanak.
             HStack(spacing: 4) {
-                iconButton(copied ? "check" : "copy", "Másolás") {
-                    Clipboard.copy(item.text)
-                    copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                if item.canCopy {
+                    iconButton(copied ? "check" : "copy", "Másolás") {
+                        Clipboard.copy(item.text)
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                    }
                 }
-                if item.rawText != item.text { iconButton(showRaw ? "type" : "audio-lines", showRaw ? "Formázott" : "Nyers átirat") { showRaw.toggle() } }
+                if item.canRetry {
+                    iconButton("refresh-cw", "Újra") { Services.shared.controller?.retryHistory(item.id) }
+                }
+                if hasTranscript, item.rawText != item.text, !item.rawText.isEmpty {
+                    iconButton(showRaw ? "type" : "audio-lines", showRaw ? "Formázott" : "Nyers átirat") { showRaw.toggle() }
+                }
                 iconButton("trash-2", "Törlés") { model.deleteHistory(item.id) }
             }
             // 0 helyett 0,001: a teljesen átlátszó nézetet a SwiftUI kiveszi a kisegítő fából (VoiceOver nem érné el a gombokat).
@@ -266,6 +277,12 @@ struct HistoryRow: View {
     }
     var kindLabel: String {
         switch item.kind { case .dictation: return "Diktálás"; case .command: return "Parancs"; case .polish: return "Polírozás" }
+    }
+    var transcript: String { showRaw ? item.rawText : item.text }
+    var hasTranscript: Bool { !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var bodyText: String {
+        if hasTranscript { return transcript }
+        return item.failureReason ?? "Nem sikerült a diktálás."
     }
     func iconButton(_ name: String, _ help: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {

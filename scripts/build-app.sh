@@ -3,7 +3,7 @@
 # Használat: scripts/build-app.sh   → dist/Business Flow.app, dist/Business-Flow-<verzió>.dmg
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSION="${VERSION:-0.4.1}"
+VERSION="${VERSION:-0.4.2}"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 APP="dist/Business Flow.app"
 

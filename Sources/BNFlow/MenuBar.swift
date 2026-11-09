@@ -42,8 +42,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let paste = action("Utolsó átirat beillesztése", #selector(pasteLast))
         paste.isEnabled = model.lastText != nil
         m.addItem(paste)
+        let copy = action("Utolsó átirat másolása", #selector(copyLast))
+        copy.isEnabled = model.lastText != nil
+        m.addItem(copy)
         let retry = action("Utolsó felvétel újrapróbálása", #selector(retryLast))
-        retry.isEnabled = controller?.lastFailedAudio != nil
+        retry.isEnabled = controller?.lastFailedAudio != nil || model.history.contains { $0.canRetry }
         m.addItem(retry)
         let polish = NSMenuItem(title: "Polírozás", action: nil, keyEquivalent: "")
         let sub = NSMenu()
@@ -86,6 +89,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func openDictionary() { openHub?(.dictionary) }
     @objc private func openSettings() { openHub?(.settings) }
     @objc private func pasteLast() { controller?.pasteLast() }
+    @objc private func copyLast() { controller?.copyLast() }
     @objc private func retryLast() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             MainActor.assumeIsolated { self?.controller?.retryLastFailed() }

@@ -95,7 +95,7 @@ final class MeetingService: ObservableObject {
         var c: [URL] = []
         if let e = ProcessInfo.processInfo.environment["BNFLOW_MEETINGS_DIR"] { c.append(URL(fileURLWithPath: e)) }
         c.append(AppPaths.supportDirectory.appendingPathComponent("meetings"))
-        c.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("dev/bn-flow-mac/meetings"))
+        c.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("dev/business-flow-mac/meetings"))
         return c.first { FileManager.default.fileExists(atPath: $0.appendingPathComponent("node_modules/playwright-core").path) }
     }
     static func nodePath() -> String? { ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"].first { FileManager.default.isExecutableFile(atPath: $0) } }

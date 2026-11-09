@@ -228,6 +228,32 @@ public struct PolishPreset: Codable, Identifiable, Hashable, Sendable {
 
 public enum HistoryKind: String, Codable, Sendable { case dictation, command, polish }
 
+/// Egy előzmény-sor állapota. A régi history.json sorai `success`ként olvasódnak.
+public enum HistoryStatus: String, Codable, Sendable, Equatable {
+    case success, failed, interrupted, empty, pasteFailed
+
+    public var label: String {
+        switch self {
+        case .success: return "Kész"
+        case .failed: return "Sikertelen"
+        case .interrupted: return "Megszakadt"
+        case .empty: return "Üres"
+        case .pasteFailed: return "Nincs beillesztve"
+        }
+    }
+
+    /// A beszédtempóba csak az a diktálás számít, amiből szöveg lett.
+    public var countsTowardPace: Bool { self == .success || self == .pasteFailed }
+
+    /// Ezekhez érdemes a helyi hangot megőrizni, amíg a megőrzési idő engedi.
+    public var storesAudio: Bool {
+        switch self {
+        case .failed, .interrupted, .empty: return true
+        case .success, .pasteFailed: return false
+        }
+    }
+}
+
 public struct HistoryItem: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var date: Date
@@ -237,11 +263,67 @@ public struct HistoryItem: Codable, Identifiable, Hashable, Sendable {
     public var bundleID: String
     public var durationSeconds: Double
     public var kind: HistoryKind
-    public init(id: UUID = UUID(), date: Date = Date(), text: String, rawText: String, appName: String, bundleID: String, durationSeconds: Double, kind: HistoryKind) {
+    public var status: HistoryStatus
+    /// Rövid, felhasználónak szóló ok. Soha nem nyers HTTP-törzs és nem kulcs.
+    public var failureReason: String?
+    /// Csak a fájlnév (`UUID.wav`) az adatmappa recordings könyvtárában. Nem abszolút útvonal.
+    public var audioFile: String?
+
+    public init(id: UUID = UUID(), date: Date = Date(), text: String, rawText: String, appName: String, bundleID: String, durationSeconds: Double, kind: HistoryKind, status: HistoryStatus = .success, failureReason: String? = nil, audioFile: String? = nil) {
         self.id = id; self.date = date; self.text = text; self.rawText = rawText; self.appName = appName
         self.bundleID = bundleID; self.durationSeconds = durationSeconds; self.kind = kind
+        self.status = status
+        self.failureReason = HistoryPrivacy.sanitize(failureReason)
+        self.audioFile = audioFile.flatMap { RecordingArchive.isSafeName($0) ? $0 : nil }
     }
+
     public var wordCount: Int { TextStats.wordCount(text) }
+    public var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    public var canCopy: Bool { hasText }
+    /// Újra csak akkor, ha a hang megvan, és az átírás nem készült el (hiba, megszakadás vagy üres eredmény).
+    public var canRetry: Bool {
+        guard let audioFile, RecordingArchive.isSafeName(audioFile) else { return false }
+        switch status {
+        case .failed, .interrupted, .empty: return true
+        case .success, .pasteFailed: return false
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, date, text, rawText, appName, bundleID, durationSeconds, kind, status, failureReason, audioFile
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Hiányzó vagy idegen mező nem dobja el a régi history.json-t.
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        date = (try? c.decode(Date.self, forKey: .date)) ?? Date()
+        text = (try? c.decode(String.self, forKey: .text)) ?? ""
+        rawText = (try? c.decode(String.self, forKey: .rawText)) ?? ""
+        appName = (try? c.decode(String.self, forKey: .appName)) ?? ""
+        bundleID = (try? c.decode(String.self, forKey: .bundleID)) ?? ""
+        durationSeconds = (try? c.decode(Double.self, forKey: .durationSeconds)) ?? 0
+        kind = (try? c.decode(HistoryKind.self, forKey: .kind)) ?? .dictation
+        status = (try? c.decode(HistoryStatus.self, forKey: .status)) ?? .success
+        failureReason = HistoryPrivacy.sanitize(try? c.decode(String.self, forKey: .failureReason))
+        let audio = try? c.decode(String.self, forKey: .audioFile)
+        audioFile = audio.flatMap { RecordingArchive.isSafeName($0) ? $0 : nil }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(date, forKey: .date)
+        try c.encode(text, forKey: .text)
+        try c.encode(rawText, forKey: .rawText)
+        try c.encode(appName, forKey: .appName)
+        try c.encode(bundleID, forKey: .bundleID)
+        try c.encode(durationSeconds, forKey: .durationSeconds)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(status, forKey: .status)
+        try c.encodeIfPresent(failureReason, forKey: .failureReason)
+        try c.encodeIfPresent(audioFile, forKey: .audioFile)
+    }
 }
 
 public enum HistoryRetention: String, Codable, CaseIterable, Sendable {

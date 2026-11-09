@@ -8,6 +8,14 @@ public struct AudioStats: Sendable, Equatable {
     public var noiseFloor: Float
     /// Az első és utolsó beszédkeret (mintában), ha volt beszéd.
     public var speechRange: Range<Int>?
+
+    public init(seconds: Double, peak: Float, speechSeconds: Double, noiseFloor: Float, speechRange: Range<Int>?) {
+        self.seconds = seconds
+        self.peak = peak
+        self.speechSeconds = speechSeconds
+        self.noiseFloor = noiseFloor
+        self.speechRange = speechRange
+    }
 }
 
 /// Hang-előkészítés feltöltés előtt: hangaktivitás-felismerés, csend levágása, halk felvétel erősítése,

@@ -146,6 +146,7 @@ enum TextInserter {
     static func insertVerified(_ text: String, into t: Target, addLeadingSpace: Bool = true) async -> InsertResult {
         var s = text
         if TestMode.isOn {
+            if TestMode.failPaste { return InsertResult(pasted: false, valueAfter: nil) }
             if addLeadingSpace, let last = TestMode.fieldValue.last, TextPipeline.needsLeadingSpace(before: last, text: s) { s = " " + s }
             if let sel = TestMode.selection, !addLeadingSpace, let r = TestMode.fieldValue.range(of: sel) {
                 TestMode.fieldValue.replaceSubrange(r, with: s); TestMode.selection = nil

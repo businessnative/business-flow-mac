@@ -133,7 +133,7 @@ struct AboutView: View {
                 BNBadge("Build \(AboutWindowController.build)", color: BN.textMedium)
             }
             Spacer()
-            Text("Business Flow — közösségi kiadás (MIT). Betűk: Geist (OFL). Ikonok: Lucide (ISC).")
+            Text("© Business Native — személyes használatra. Betűk: Geist (OFL). Ikonok: Lucide (ISC).")
                 .font(BN.sans(11)).foregroundColor(BN.textWeak)
         }
         .padding(32)

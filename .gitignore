@@ -3,34 +3,5 @@ dist/
 *.xcodeproj/
 .swiftpm/
 .DS_Store
-
-# secrets / local data (never commit)
 .env
-.env.*
-!.env.example
-*.enc
-keys.enc
-*.p12
-*.p8
-*.pem
-*.key
-*.log
-*.wav
-*.m4a
-*.caf
-*.mp3
-
-# meetings helper build
-meetings/node_modules/
-meetings/dist/
-
-# eval live outputs
-evals/results/*
-!evals/results/.gitkeep
-eval/
-bf-e2e*.json
-*.cer
-*.mobileprovision
-*.keychain
-*.keychain-db
-*signing-keychain.pass
+*.env

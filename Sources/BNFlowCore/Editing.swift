@@ -66,7 +66,7 @@ public enum HistorySearch {
         let words = fold(query).split(whereSeparator: { $0.isWhitespace }).map(String.init)
         guard !words.isEmpty else { return items }
         return items.filter { it in
-            let hay = fold(it.text + " " + it.rawText + " " + it.appName)
+            let hay = fold(it.text + " " + it.rawText + " " + it.appName + " " + (it.failureReason ?? "") + " " + it.status.label)
             return words.allSatisfy { hay.contains($0) }
         }
     }

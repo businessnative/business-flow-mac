@@ -20,8 +20,10 @@ final class DictationController {
     private var resetWork: DispatchWorkItem?
     private var busy = false
     private var job: Task<Void, Never>?
-    /// Az utolsó sikertelen felvétel (csak memóriában), hogy hálózati hiba után újrapróbálható legyen.
+    /// Az utolsó sikertelen felvétel memóriában is, hogy a menü akkor is újrapróbálhassa, ha az előzmény nem mentődik.
     private(set) var lastFailedAudio: (wav: Data, seconds: Double, kind: DictationKind, stats: AudioStats)?
+    /// A futó feldolgozás már írt előzményt; az őr és a megszakítás nem ír másodikat.
+    private var jobRecorded = false
     private var learnWork: Task<Void, Never>?
     /// Őrök: felvétel közbeni ellenőrzés (elveszett felengedés, néma mikrofon) és feldolgozási időkorlát.
     private var recWatch: Timer?
@@ -114,6 +116,8 @@ final class DictationController {
     }
 
     private func abortProcessing(short: String, detail: String, showErr: Bool) {
+        let audio = pendingAudio
+        let already = jobRecorded
         jobID += 1
         spec?.task.cancel(); spec = nil
         prefetch.close()
@@ -121,10 +125,26 @@ final class DictationController {
         procWatch?.cancel(); procWatch = nil
         busy = false; busySince = nil
         monitor.engine.reset()
-        if let a = pendingAudio { lastFailedAudio = a }
         pendingAudio = nil
-        let tail = lastFailedAudio != nil ? " A felvétel megmaradt: menü → „Utolsó felvétel újrapróbálása”." : ""
-        if showErr { showError(short, detail: detail + tail) } else { lastErrorDetail = detail + tail; model.bar = .idle }
+        if !already {
+            jobRecorded = true
+            if let audio {
+                lastFailedAudio = audio
+                let reason = short == "Időtúllépés" ? HistoryCopy.timeout : HistoryCopy.stuck
+                if DictationRecovery.shouldRecord(elapsed: audio.seconds, speechSeconds: audio.stats.speechSeconds) || !audio.wav.isEmpty {
+                    storeAttempt(wav: audio.wav, seconds: audio.seconds, kind: audio.kind, stats: audio.stats, status: .interrupted, reason: reason, replacing: nil)
+                }
+            }
+        }
+        let tail = lastFailedAudio != nil ? " A felvétel megmaradt az Előzményekben, onnan vagy a menüből újrapróbálhatod." : ""
+        if already {
+            if model.bar == .processing(nil) { model.bar = .idle }
+        } else if showErr {
+            showError(short, detail: detail + tail)
+        } else {
+            lastErrorDetail = detail + tail
+            model.bar = .idle
+        }
     }
 
     /// Feldolgozás indítása időkorláttal; az elavult feladat nem írhatja felül az új állapotot.
@@ -132,6 +152,7 @@ final class DictationController {
         jobID += 1
         let id = jobID
         busy = true; busySince = Date()
+        jobRecorded = false
         pendingAudio = audio
         model.bar = .processing(nil)
         let w = DispatchWorkItem { [weak self] in
@@ -175,11 +196,14 @@ final class DictationController {
         startCueWork?.cancel()
         stopSpeculation(cancelTask: true)
         recWatch?.invalidate(); recWatch = nil
-        recorder.cancel()
+        let wasRecording = recorder.isRecording
+        let started = model.recordingSince ?? Date()
+        let samples = wasRecording ? recorder.takeSamples() : []
         muter.restore()
         monitor.engine.reset()
         model.recordingSince = nil
         model.bar = .idle
+        if wasRecording { keepInterrupted(samples: samples, elapsed: Date().timeIntervalSince(started), reason: HistoryCopy.interrupted) }
     }
 
     func start(_ k: DictationKind, handsFree hf: Bool) {
@@ -224,7 +248,7 @@ final class DictationController {
         let uid = model.settings.microphoneUID
         recorder.start(deviceUID: uid) { [weak self] err in
             guard let self, let err else { return }
-            FlowLog.audio.error("felvétel indítása sikertelen: \(String(describing: err), privacy: .public) – újrapróbálás")
+            FlowLog.audio.error("felvétel indítása sikertelen: \(err.localizedDescription, privacy: .public) – újrapróbálás")
             guard uid != nil else { self.micFailed(err); return }
             // Egyszeri újrapróbálás alapértelmezett eszközzel (a hangmotor újraépül).
             self.recorder.start(deviceUID: nil) { [weak self] err2 in
@@ -292,15 +316,26 @@ final class DictationController {
         stopSpeculation(cancelTask: true)
         recWatch?.invalidate(); recWatch = nil
         procWatch?.cancel(); procWatch = nil
-        jobID += 1; busySince = nil; pendingAudio = nil
-        job?.cancel()
+        let audio = pendingAudio
         let wasRecording = recorder.isRecording
-        recorder.cancel()
+        let started = model.recordingSince ?? Date()
+        let samples = wasRecording ? recorder.takeSamples() : []
+        jobID += 1; busySince = nil; pendingAudio = nil
+        job?.cancel(); job = nil
         muter.restore()
         monitor.engine.reset()
         model.recordingSince = nil
         busy = false
         if wasRecording, model.bar != .idle, isLongEnough() { play(.cancel) }
+        if wasRecording {
+            keepInterrupted(samples: samples, elapsed: Date().timeIntervalSince(started), reason: HistoryCopy.interrupted)
+        } else if !jobRecorded, let audio {
+            jobRecorded = true
+            lastFailedAudio = audio
+            if !audio.wav.isEmpty {
+                storeAttempt(wav: audio.wav, seconds: audio.seconds, kind: audio.kind, stats: audio.stats, status: .interrupted, reason: HistoryCopy.interrupted, replacing: nil)
+            }
+        }
         model.bar = .idle
     }
 
@@ -333,6 +368,9 @@ final class DictationController {
         let elapsed = Date().timeIntervalSince(started)
         if AudioPrep.isSilent(stats) {
             stopSpeculation(cancelTask: true)
+            if DictationRecovery.shouldRecord(elapsed: elapsed, speechSeconds: stats.speechSeconds) {
+                storeAttempt(wav: nil, seconds: elapsed, kind: self.kind, stats: stats, status: .empty, reason: HistoryCopy.silence, replacing: nil, rememberAudio: false)
+            }
             model.bar = .idle
             if elapsed > 0.5 { flash(.notice("Nem hallottam semmit")) }
             return
@@ -359,13 +397,35 @@ final class DictationController {
         }
     }
 
-    /// „Utolsó felvétel újrapróbálása” (menü): a memóriában tartott, sikertelen felvétel újraküldése.
+    /// „Utolsó felvétel újrapróbálása” (menü). Ha az előzményben van hang, azt a sort frissíti; különben a memóriában tartott felvételt küldi.
     func retryLastFailed() {
-        guard !busy, !recorder.isRecording, let f = lastFailedAudio else { return }
+        guard !busy, !recorder.isRecording else { return }
+        if let item = model.history.first(where: \.canRetry),
+           HistoryAttempt.audioForRetry(item: item, load: { self.model.recordings.load($0) }) != nil {
+            retryHistory(item.id)
+            return
+        }
+        guard let f = lastFailedAudio else { return }
         let target = TextInserter.currentTarget()
         let ctx = TextInserter.context(target, includeText: model.settings.contextAwareness)
         runJob(audio: f) { [weak self] in
-            await self?.process(wav: f.wav, seconds: f.seconds, kind: f.kind, target: target, context: ctx, stats: f.stats)
+            await self?.process(wav: f.wav, seconds: f.seconds, kind: f.kind, target: target, context: ctx, stats: f.stats, replacing: nil)
+        }
+    }
+
+    /// Előzmény sora: a lemezen lévő hangot küldi el, és ugyanazt a sort írja felül.
+    func retryHistory(_ id: UUID) {
+        guard !busy, !recorder.isRecording else { return }
+        guard let item = model.history.first(where: { $0.id == id }) else { return }
+        guard let wav = HistoryAttempt.audioForRetry(item: item, load: { model.recordings.load($0) }) else { return }
+        let kind: DictationKind = item.kind == .command ? .command : .dictation
+        let seconds = max(item.durationSeconds, 0.4)
+        let stats = AudioStats(seconds: seconds, peak: 0.4, speechSeconds: seconds, noiseFloor: 0.001, speechRange: nil)
+        let target = TextInserter.currentTarget()
+        let ctx = TextInserter.context(target, includeText: model.settings.contextAwareness)
+        lastFailedAudio = (wav, seconds, kind, stats)
+        runJob(audio: (wav, seconds, kind, stats)) { [weak self] in
+            await self?.process(wav: wav, seconds: item.durationSeconds, kind: kind, target: target, context: ctx, stats: stats, replacing: id)
         }
     }
 
@@ -472,10 +532,14 @@ final class DictationController {
         FlowLog.flow.info("\(trace.logLine, privacy: .public)")
     }
 
-    private func process(wav: Data, seconds: Double, kind: DictationKind, target: TextInserter.Target, context: DictationContext, stats: AudioStats, finalizeMs: Int = 0, stopMark: UInt64 = 0) async {
+    private func process(wav: Data, seconds: Double, kind: DictationKind, target: TextInserter.Target, context: DictationContext, stats: AudioStats, finalizeMs: Int = 0, stopMark: UInt64 = 0, replacing: UUID? = nil) async {
         // 0.4.0: a kulcsok az alkalmazás saját titkosított fájljában vannak — olvasásuk azonnali, rendszerablak nélküli.
         let keys = Keychain.all()
-        guard keys.canTranscribe else { showError("Nincs kulcs", detail: FlowError.noAPIKey.message); return }
+        guard keys.canTranscribe else {
+            noteTranscriptionFailure(.noAPIKey, quota: nil, wav: wav, seconds: seconds, kind: kind, target: target, stats: stats, replacing: replacing)
+            showError("Nincs kulcs", detail: FlowError.noAPIKey.message)
+            return
+        }
         let s = model.settings
         let allTerms = terms + Array(TextRules.contextNames(context).prefix(20))
         if E2E.delayBeforeTranscribe > 0 { try? await Task.sleep(nanoseconds: UInt64(E2E.delayBeforeTranscribe * 1e9)) }
@@ -484,7 +548,7 @@ final class DictationController {
         AIRouter.onFailure = { p, e in
             if e == .quota || e == .rateLimit { limitProviders.add(p) }
             // Csak a hiba típusa. A válasz törzse kulcsot vagy számlázási azonosítót tartalmazhat.
-            FlowLog.flow.error("átírás hiba [\(p.rawValue, privacy: .public)]: \(String(describing: e), privacy: .public)")
+            FlowLog.flow.error("átírás hiba [\(p.rawValue, privacy: .public)]: \(e.logName, privacy: .public)")
         }
         let ident = transcriptionIdentity(s)
         let id = TranscriptRequestID.make(wav: wav, provider: s.transcriptionProvider.rawValue, model: ident.model, fallback: ident.fallback, language: s.language.rawValue, terms: allTerms)
@@ -494,33 +558,39 @@ final class DictationController {
         let transcribeEnd = resolved.outcome?.transcriptReady ?? DispatchTime.now().uptimeNanoseconds
         let transcribeWait = Int((max(transcribeEnd, tTr) &- tTr) / 1_000_000)
         if let usedProvider = resolved.provider { FlowLog.flow.info("átírás: \(usedProvider.rawValue, privacy: .public)") }
-        if Task.isCancelled { return }
+        if Task.isCancelled && jobRecorded { return }
         guard case .success(let rawT) = resolved.result else {
             if case .failure(let e) = resolved.result {
                 logTrace(finalizeMs: finalizeMs, transcribeWait: transcribeWait, overlapped: resolved.overlapped, cleanupMs: 0, pasteMs: 0, stopMark: mark, speculated: resolved.speculated, bytes: wav.count)
-                FlowLog.flow.error("átírás sikertelen: \(String(describing: e), privacy: .public)")
-                if e == .emptyResult { flash(.notice("Nem hallottam semmit")) } else {
-                    lastFailedAudio = (wav, seconds, kind, stats)
-                    if e == .quota || e == .rateLimit {
-                        let msg = TranscriptionLimitCopy.message(providers: limitProviders.names)
-                        showError(msg, detail: msg + " A felvétel megmaradt: menü → „Utolsó felvétel újrapróbálása”.", after: 6)
-                    } else {
-                        showError(e.short, detail: e.message + " A felvétel megmaradt: menü → „Utolsó felvétel újrapróbálása”.")
-                    }
+                FlowLog.flow.error("átírás sikertelen: \(e.logName, privacy: .public)")
+                guard !jobRecorded else { return }
+                let quota = (e == .quota || e == .rateLimit) ? TranscriptionLimitCopy.message(providers: limitProviders.names) : nil
+                noteTranscriptionFailure(e, quota: quota, wav: wav, seconds: seconds, kind: kind, target: target, stats: stats, replacing: replacing)
+                if e == .emptyResult {
+                    flash(.notice("Nem hallottam semmit"))
+                } else if e == .quota || e == .rateLimit, let msg = quota {
+                    showError(msg, detail: msg + " A felvétel megmaradt az Előzményekben, onnan vagy a menüből újrapróbálhatod.", after: 6)
+                } else {
+                    showError(e.short, detail: e.message + " A felvétel megmaradt az Előzményekben, onnan vagy a menüből újrapróbálhatod.")
                 }
             }
             return
         }
+        if Task.isCancelled || jobRecorded { return }
         lastFailedAudio = nil
         let raw = AudioPrep.cleanTranscript(rawT, peak: stats.peak, speechSeconds: stats.speechSeconds)
         E2E.mark("transcribed"); if E2E.isOn { E2E.raw = raw }
-        guard !raw.isEmpty else { flash(.notice("Nem hallottam semmit")); return }
+        guard !raw.isEmpty else {
+            noteTranscriptionFailure(.emptyResult, quota: nil, wav: wav, seconds: seconds, kind: kind, target: target, stats: stats, replacing: replacing)
+            flash(.notice("Nem hallottam semmit"))
+            return
+        }
         let stage = StageClock(finalizeMs: finalizeMs, transcribeWait: transcribeWait, overlapped: resolved.overlapped, stopMark: mark, speculated: resolved.speculated, bytes: wav.count, outcome: resolved.outcome)
         switch kind {
-        case .dictation: await finishDictation(raw: raw, seconds: seconds, target: target, keys: keys, context: context, stage: stage)
+        case .dictation: await finishDictation(raw: raw, seconds: seconds, target: target, keys: keys, context: context, stage: stage, replacing: replacing)
         case .command:
             let c0 = DispatchTime.now().uptimeNanoseconds
-            await finishCommand(instruction: raw, seconds: seconds, target: target, keys: keys, context: context)
+            await finishCommand(instruction: raw, seconds: seconds, target: target, keys: keys, context: context, replacing: replacing)
             let tail = Int((DispatchTime.now().uptimeNanoseconds &- c0) / 1_000_000)
             logTrace(finalizeMs: stage.finalizeMs, transcribeWait: stage.transcribeWait, overlapped: stage.overlapped, cleanupMs: tail, pasteMs: 0, stopMark: stage.stopMark, speculated: stage.speculated, bytes: stage.bytes)
         }
@@ -557,7 +627,7 @@ final class DictationController {
         router.chatProvider(model.settings, keys) ?? FallbackChat([])
     }
 
-    private func finishDictation(raw: String, seconds: Double, target: TextInserter.Target, keys: ProviderKeys, context ctx: DictationContext, stage: StageClock) async {
+    private func finishDictation(raw: String, seconds: Double, target: TextInserter.Target, keys: ProviderKeys, context ctx: DictationContext, stage: StageClock, replacing: UUID?) async {
         let s = model.settings
         let c0 = DispatchTime.now().uptimeNanoseconds
         let reused = stage.outcome?.polishInput == raw && stage.outcome?.context == ctx && stage.outcome?.settings == s
@@ -569,21 +639,31 @@ final class DictationController {
         }
         let cleanupEnd = (reused ? stage.outcome?.polishReady : nil) ?? DispatchTime.now().uptimeNanoseconds
         let cleanupMs = Int((max(cleanupEnd, c0) &- c0) / 1_000_000)
-        if Task.isCancelled { return }
-        let text = r.text
+        if Task.isCancelled || jobRecorded { return }
+        let text = r.text.isEmpty ? raw : r.text
         E2E.mark("formatted"); if E2E.isOn { E2E.formatted = text }
-        guard !text.isEmpty else {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             logTrace(finalizeMs: stage.finalizeMs, transcribeWait: stage.transcribeWait, overlapped: stage.overlapped, cleanupMs: cleanupMs, pasteMs: 0, stopMark: stage.stopMark, speculated: stage.speculated, bytes: stage.bytes)
             model.bar = .idle
             return
         }
+        // A szöveg a beillesztés előtt bekerül, hogy egy közbeni megszakítás se vigye el.
+        jobRecorded = true
+        let rowID = replacing ?? UUID()
+        let provisional = HistoryAttempt.succeeded(id: rowID, text: text, raw: raw, appName: target.appName, bundleID: target.bundleID ?? "", seconds: seconds, kind: .dictation)
+        if replacing != nil { model.updateHistory(provisional) } else { model.addHistory(provisional) }
         let p0 = DispatchTime.now().uptimeNanoseconds
         let res = await TextInserter.insertVerified(text, into: target)
         let pasteMs = Int((DispatchTime.now().uptimeNanoseconds &- p0) / 1_000_000)
         logTrace(finalizeMs: stage.finalizeMs, transcribeWait: stage.transcribeWait, overlapped: stage.overlapped, cleanupMs: cleanupMs, pasteMs: pasteMs, stopMark: stage.stopMark, speculated: stage.speculated, bytes: stage.bytes)
         E2E.mark("inserted"); if E2E.isOn { E2E.pasted = res.pasted }
-        model.addHistory(HistoryItem(text: text, rawText: raw, appName: target.appName, bundleID: target.bundleID ?? "", durationSeconds: seconds, kind: .dictation))
-        if res.pasted { model.bar = .idle } else { flash(.notice("Vágólapra másolva – ⌘V"), after: 3.5) }
+        if !res.pasted {
+            model.updateHistory(HistoryAttempt.pasteFailed(id: rowID, text: text, raw: raw, appName: target.appName, bundleID: target.bundleID ?? "", seconds: seconds, kind: .dictation))
+            Clipboard.copy(text)
+            flash(.notice("Vágólapra másolva – ⌘V"), after: 3.5)
+        } else {
+            model.bar = .idle
+        }
         if res.pasted, s.autoLearnDictionary, let pasted = res.valueAfter { scheduleLearning(inserted: text, pasted: pasted, target: target) }
     }
 
@@ -604,18 +684,23 @@ final class DictationController {
         }
     }
 
-    private func finishCommand(instruction: String, seconds: Double, target: TextInserter.Target, keys: ProviderKeys, context: DictationContext) async {
+    private func finishCommand(instruction: String, seconds: Double, target: TextInserter.Target, keys: ProviderKeys, context: DictationContext, replacing: UUID?) async {
         let selection = await TextInserter.selectedText(target)
         var ctx = context
         ctx.selected = selection
         let r = await CommandFormatter.run(instruction: instruction, context: ctx, chat: chat(keys))
-        if Task.isCancelled { return }
+        if Task.isCancelled || jobRecorded { return }
         switch r {
         case .success(let out):
+            jobRecorded = true
             if selection != nil { await TextInserter.replaceSelection(with: out, in: target) } else { _ = await TextInserter.insert(out, into: target) }
-            model.addHistory(HistoryItem(text: out, rawText: instruction, appName: target.appName, bundleID: target.bundleID ?? "", durationSeconds: seconds, kind: .command))
+            let item = HistoryAttempt.succeeded(id: replacing ?? UUID(), text: out, raw: instruction, appName: target.appName, bundleID: target.bundleID ?? "", seconds: seconds, kind: .command)
+            if replacing != nil { model.updateHistory(item) } else { model.addHistory(item) }
             if let sel = selection { model.lastPolish = (sel, out); flash(.polishDone, after: 5) } else { model.bar = .idle }
         case .failure(let e):
+            jobRecorded = true
+            let item = HistoryItem(id: replacing ?? UUID(), text: instruction, rawText: instruction, appName: target.appName, bundleID: target.bundleID ?? "", durationSeconds: seconds, kind: .command, status: .failed, failureReason: HistoryCopy.reason(for: e))
+            if replacing != nil { model.updateHistory(item) } else { model.addHistory(item) }
             showError(e.short, detail: e.message)
         }
     }
@@ -661,6 +746,89 @@ final class DictationController {
         Task { _ = await TextInserter.insert(t, into: target) }
     }
 
+    func copyLast() {
+        guard let t = model.lastText else { return }
+        Clipboard.copy(t)
+    }
+
+    // MARK: Előzmény
+
+    /// Sikertelen vagy megszakadt kísérlet mentése. A hang csak akkor kerül lemezre, ha a megőrzés engedi.
+    private func storeAttempt(wav: Data?, seconds: Double, kind: DictationKind, stats: AudioStats?, status: HistoryStatus, reason: String, replacing: UUID?, text: String = "", raw: String = "", rememberAudio: Bool = true) {
+        let id = replacing ?? UUID()
+        let historyKind: HistoryKind = kind == .command ? .command : .dictation
+        let appName = target?.appName ?? "Ismeretlen"
+        let bundle = target?.bundleID ?? ""
+        var audioName: String?
+        if let wav, !wav.isEmpty, status.storesAudio {
+            audioName = model.archiveAudio(wav, id: id)
+        }
+        let item: HistoryItem
+        switch status {
+        case .failed:
+            item = HistoryAttempt.failed(id: id, appName: appName, bundleID: bundle, seconds: seconds, kind: historyKind, reason: reason, audioFile: audioName)
+        case .interrupted:
+            item = HistoryAttempt.interrupted(id: id, appName: appName, bundleID: bundle, seconds: seconds, kind: historyKind, reason: reason, audioFile: audioName)
+        case .empty:
+            item = HistoryAttempt.empty(id: id, appName: appName, bundleID: bundle, seconds: seconds, kind: historyKind, reason: reason, audioFile: audioName)
+        case .pasteFailed:
+            item = HistoryAttempt.pasteFailed(id: id, text: text, raw: raw, appName: appName, bundleID: bundle, seconds: seconds, kind: historyKind)
+        case .success:
+            item = HistoryAttempt.succeeded(id: id, text: text, raw: raw, appName: appName, bundleID: bundle, seconds: seconds, kind: historyKind)
+        }
+        if replacing != nil { model.updateHistory(item) } else { model.addHistory(item) }
+        if rememberAudio, let wav, !wav.isEmpty, let stats, status.storesAudio {
+            lastFailedAudio = (wav, seconds, kind, stats)
+        }
+    }
+
+    private func noteTranscriptionFailure(_ error: FlowError, quota: String?, wav: Data, seconds: Double, kind: DictationKind, target: TextInserter.Target, stats: AudioStats, replacing: UUID?) {
+        guard !jobRecorded else { return }
+        jobRecorded = true
+        let reason = HistoryCopy.reason(for: error, quotaMessage: quota)
+        let status: HistoryStatus = error == .emptyResult ? .empty : .failed
+        let historyKind: HistoryKind = kind == .command ? .command : .dictation
+        if let replacing {
+            let base = model.history.first { $0.id == replacing }
+                ?? HistoryAttempt.failed(id: replacing, appName: target.appName, bundleID: target.bundleID ?? "", seconds: seconds, kind: historyKind, reason: reason, audioFile: nil)
+            var updated = HistoryAttempt.applyRetry(base, outcome: .failure(error, quotaMessage: quota))
+            if updated.audioFile == nil {
+                updated.audioFile = model.archiveAudio(wav, id: replacing)
+            }
+            model.updateHistory(updated)
+        } else {
+            let savedTarget = self.target
+            self.target = target
+            storeAttempt(wav: wav, seconds: seconds, kind: kind, stats: stats, status: status, reason: reason, replacing: nil, rememberAudio: false)
+            self.target = savedTarget
+        }
+        lastFailedAudio = (wav, seconds, kind, stats)
+    }
+
+    /// Felvétel közbeni megszakítás: a rövid, beszéd nélküli koppintást eldobjuk, a többit hanggal együtt megőrizzük.
+    private func keepInterrupted(samples: [Float], elapsed: Double, reason: String) {
+        let stats = samples.isEmpty
+            ? AudioStats(seconds: 0, peak: 0, speechSeconds: 0, noiseFloor: 0, speechRange: nil)
+            : AudioPrep.analyze(samples)
+        guard DictationRecovery.shouldRecord(elapsed: elapsed, speechSeconds: stats.speechSeconds) else { return }
+        let kind = self.kind
+        let epoch = model.historyEpoch
+        if samples.isEmpty {
+            storeAttempt(wav: nil, seconds: max(elapsed, stats.seconds), kind: kind, stats: nil, status: .interrupted, reason: reason, replacing: nil, rememberAudio: false)
+            return
+        }
+        Task { [weak self] in
+            let wav = await Task.detached(priority: .utility) {
+                WAV.encode(samples: WAV.floatToInt16(AudioPrep.prepare(samples)))
+            }.value
+            guard let self, self.model.historyEpoch == epoch else { return }
+            if self.lastFailedAudio == nil, !self.busy, !self.recorder.isRecording {
+                self.lastFailedAudio = (wav, max(elapsed, stats.seconds), kind, stats)
+            }
+            self.storeAttempt(wav: wav, seconds: max(elapsed, stats.seconds), kind: kind, stats: stats, status: .interrupted, reason: reason, replacing: nil, rememberAudio: false)
+        }
+    }
+
     // MARK: Sáv-üzenetek
 
     private(set) var lastErrorDetail: String?
@@ -669,7 +837,8 @@ final class DictationController {
         lastErrorDetail = detail
         play(.error)
         flash(.error(short), after: after)
-        NSLog("Business Flow: %@", detail)
+        // A naplóba csak a már megtisztított mondat kerülhet, kulcs és válasz-törzs nélkül.
+        NSLog("Business Flow: %@", HistoryPrivacy.sanitize(detail) ?? HistoryCopy.generic)
     }
 
     func flash(_ mode: BarMode, after: Double = 2.2) {

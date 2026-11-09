@@ -509,6 +509,7 @@ final class PillMenuModel: ObservableObject {
         func icon(_ t: String) -> String? {
             switch t {
             case let x where x.hasSuffix("megnyitása"): return "house"
+            case let x where x.hasPrefix("Utolsó átirat másolása"): return "copy"
             case let x where x.hasPrefix("Utolsó átirat"): return "clipboard-paste"
             case let x where x.hasPrefix("Utolsó felvétel"): return "refresh-cw"
             case "Szótár…": return "book-open"

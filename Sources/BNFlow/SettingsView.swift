@@ -504,6 +504,8 @@ struct AdvancedSettings: View {
             BNCard {
                 VStack(alignment: .leading, spacing: 10) {
                     BNLabel("Előzmények megőrzése", size: 10)
+                    Text("A sikertelen, üres és megszakadt diktálás is megmarad. A felvétel csak ezen a Macen van, és csak az Újra gombra megy el a szolgáltatónak.")
+                        .font(BN.sans(12)).foregroundColor(BN.textWeak)
                     HStack(spacing: 8) {
                         ForEach(HistoryRetention.allCases, id: \.self) { r in
                             Button(r.label) { model.settings.retention = r; model.applyRetention() }.buttonStyle(TabStyle(selected: model.settings.retention == r))

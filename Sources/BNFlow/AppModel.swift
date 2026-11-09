@@ -37,10 +37,14 @@ final class AppModel: ObservableObject {
 
     private let settingsStore = JSONFileStore<AppSettings>(url: AppPaths.supportDirectory.appendingPathComponent("settings.json"))
     private let historyStore = JSONFileStore<[HistoryItem]>(url: AppPaths.supportDirectory.appendingPathComponent("history.json"))
+    let recordings = RecordingArchive(directory: AppPaths.supportDirectory.appendingPathComponent("recordings", isDirectory: true))
+    /// A futó mentés ezt nézi: törlés vagy „ne mentsen” közben a későn beérkező hang nem kerül vissza.
+    private(set) var historyEpoch = 0
 
     private init() {
         settings = settingsStore.load() ?? AppSettings()
         history = HistoryLogic.prune(historyStore.load() ?? [], retention: settings.retention)
+        recordings.deleteUnreferenced(keeping: Set(history.compactMap(\.audioFile)))
         // Csak a kulcs meglétét kérdezzük (adat nélkül): ez nem kér Kulcskarika-jóváhagyást indításkor.
         refreshKey()
     }
@@ -48,19 +52,63 @@ final class AppModel: ObservableObject {
     var stats: HistoryStats { HistoryLogic.stats(history) }
 
     func addHistory(_ item: HistoryItem) {
-        guard settings.retention != .never else { lastTranscript = item.text; return }
-        history.insert(item, at: 0)
-        lastTranscript = item.text
-        saveHistory()
+        var ledger = snapshot()
+        ledger.add(item)
+        apply(ledger, save: settings.retention != .never)
     }
-    func deleteHistory(_ id: UUID) { history.removeAll { $0.id == id }; saveHistory() }
-    func clearHistory() { history.removeAll(); saveHistory() }
-    func applyRetention() { history = HistoryLogic.prune(history, retention: settings.retention); saveHistory() }
+
+    func updateHistory(_ item: HistoryItem) {
+        var ledger = snapshot()
+        let drop = ledger.update(item)
+        drop.forEach { recordings.delete($0) }
+        apply(ledger, save: settings.retention != .never)
+    }
+
+    func deleteHistory(_ id: UUID) {
+        var ledger = snapshot()
+        if let name = ledger.remove(id: id) { recordings.delete(name) }
+        apply(ledger, save: true)
+    }
+
+    func clearHistory() {
+        historyEpoch += 1
+        var ledger = snapshot()
+        ledger.removeAll().forEach { recordings.delete($0) }
+        apply(ledger, save: true)
+        recordings.deleteUnreferenced(keeping: [])
+    }
+
+    func applyRetention() {
+        if settings.retention == .never { historyEpoch += 1 }
+        var ledger = snapshot()
+        ledger.retention = settings.retention
+        ledger.prune().forEach { recordings.delete($0) }
+        apply(ledger, save: true)
+        if settings.retention == .never { recordings.deleteUnreferenced(keeping: []) }
+    }
+
+    /// A helyi hang fájlneve, ha a megőrzés engedi a mentést. Üres hangot nem ír ki.
+    func archiveAudio(_ wav: Data, id: UUID) -> String? {
+        guard settings.retention != .never else { return nil }
+        return recordings.save(wav: wav, id: id)
+    }
+
+    private func snapshot() -> HistoryLedger {
+        HistoryLedger(items: history, lastTranscript: lastTranscript, retention: settings.retention)
+    }
+
+    private func apply(_ ledger: HistoryLedger, save: Bool) {
+        history = ledger.items
+        lastTranscript = ledger.lastTranscript
+        if save { saveHistory() }
+    }
+
     private func saveHistory() { historyStore.save(history) }
 
     /// Az utolsó átirat akkor is elérhető, ha az előzmények mentése ki van kapcsolva (csak memóriában).
+    /// Üres, sikertelen sor nem írja felül.
     var lastTranscript: String?
-    var lastText: String? { lastTranscript ?? history.first?.text }
+    var lastText: String? { snapshot().lastText }
 
     func pushLevel(_ l: Float) {
         var v = levels

@@ -6,8 +6,6 @@ Natív Swift (SwiftUI + AppKit), SwiftPM-mel épül; Xcode nem kell, a Command L
 > **Közösségi kiadás – BYOK (saját kulccsal).** Nincs beépített API-kulcs, közös kredit, köztes szerver, analitika vagy telemetria.
 > Mindenki a **saját** OpenAI / Gemini (és opcionálisan Anthropic) kulcsát adja meg; az app közvetlenül a szolgáltatót hívja. Lásd `SECURITY.md`.
 
-További kiadások: [iPhone](https://github.com/businessnative/business-flow-ios) · [Windows + macOS asztali](https://github.com/businessnative/business-flow-windows).
-
 ## Telepítés AI-ügynökkel (Claude Code, Cursor, Codex …)
 
 Add oda ezt a repót az AI-ügynöködnek ezzel a kéréssel: *„Telepítsd a Business Flow Mac appot a README »Telepítés AI-ügynökkel« része szerint.”* Az ügynök lépései:
@@ -22,7 +20,7 @@ Add oda ezt a repót az AI-ügynöködnek ezzel a kéréssel: *„Telepítsd a B
 8. **Saját API-kulcs:** Hub → Beállítások → API-kulcs → illeszd be (vagy válaszd ki a saját `.env` fájlodat). Parancssorból (az értéket nem írja ki):
    `"/Applications/Business Flow.app/Contents/MacOS/BNFlow" --import-env /utvonal/a/sajat/.env --key OPENAI_API_KEY`
    Kulcs: [OpenAI](https://platform.openai.com/api-keys) · [Gemini](https://aistudio.google.com/apikey) · [Anthropic](https://console.anthropic.com/settings/keys). Minta: `.env.example`.
-9. **Ellenőrzés:** Hub → Beállítások → API-kulcs → **Kulcs tesztelése**, majd egy próbadiktálás bármelyik szövegmezőben.
+9. **Ellenőrzés:** Hub → Beállítások → Haladó → kapcsolatteszt, majd egy próbadiktálás bármelyik szövegmezőben.
 10. *(Opcionális)* Meeting-jegyzetelő: `cd meetings && npm install && npm run build`, részletek: `docs/MEETINGS.md`.
 
 > Ügynököknek: soha ne commitolj `.env`-et, kulcsot, aláíró tanúsítványt vagy naplót. A kulcsot a felhasználó illessze be.
@@ -92,7 +90,6 @@ A becslés közelítő (a magyar szöveg tokenszáma, a szótár/környezet hoss
 - Átírás: OpenAI vagy Gemini; szövegtisztítás: OpenAI, Claude vagy Gemini – a Beállításokban választható, a modellek a Haladó fülön átírhatók.
 - A kulcsok **csak a saját Maceden**, géphez kötött titkosított fájlban vannak (`~/Library/Application Support/Business Flow/keys.enc`, 0600). Nem kerülnek repóba, naplóba vagy felhőbe.
 - A hang és a szöveg csak a te kulcsoddal, közvetlenül a választott szolgáltatóhoz megy. Előzmények helyben: `~/Library/Application Support/Business Flow/`.
-- Ha a szolgáltatónál elfogy a keret vagy a kredit (pl. OpenAI `insufficient_quota`, Gemini `RESOURCE_EXHAUSTED`), az állapotsáv ezt írja ki: *„Elfogyott az átírás kerete. Nézd meg az OpenAI vagy a Gemini számlázását.”* – ilyenkor a saját [OpenAI](https://platform.openai.com/settings/organization/billing) vagy [Gemini](https://aistudio.google.com/usage) fiókodban kell keretet feltölteni.
 
 ## Funkciók
 
@@ -109,6 +106,11 @@ A becslés közelítő (a magyar szöveg tokenszáma, a szótár/környezet hoss
 - **Hub ablak:** Kezdőlap (statisztikák, keresés, előzmények másolás/törlés/nyers átirat), Szótár, Szövegrészletek, Stílus, Polírozás, Beállítások (Általános, Nyelvek, Mikrofon, Billentyűk, Engedélyek, API-kulcs, Haladó).
 - Média némítása diktálás közben, saját szintetizált hangjelzések, indítás bejelentkezéskor, sáv elrejtése üresjáratban, menüsor-ikon (BN pontmátrix-nyíl).
 - Előzmények helyben: `~/Library/Application Support/Business Flow/history.json` (0600), megőrzési idő állítható.
+
+### Újdonságok a 0.4.2-ban
+
+- **Diktálás-mentés:** ha az átírás hibára fut (pl. keret elfogyott), a kapcsolat megszakad, vagy a szöveg nem kerül be a mezőbe, az Előzményekben megmarad. Kimásolható, és a menüből az „Utolsó átirat másolása” meg az „Utolsó felvétel újrapróbálása” is elérhető.
+- A kerethiba továbbra is egyértelmű: *„Elfogyott az átírás kerete. Nézd meg az OpenAI vagy a Gemini számlázását.”* (BYOK – a saját szolgáltatói számládon kell keretet adni.)
 
 ### Újdonságok a 0.3.0-ban
 
@@ -131,7 +133,7 @@ A becslés közelítő (a magyar szöveg tokenszáma, a szótár/környezet hoss
 - **Megbízható beillesztés:** ellenőrzi, hogy a szöveg tényleg bekerült-e; ha nem, AX-szel próbálja, végül a vágólapon hagyja („Vágólapra másolva – ⌘V”).
 - **Szótár automatikus tanulása:** ha beillesztés után egy szót kijavítasz, felveszi a szótárba („Szótárba: X”).
 - **Hangelőkészítés:** hangaktivitás-felismerés, csend levágása, halk (suttogott) felvétel erősítése, csend-hallucinációk („Köszönöm a figyelmet”) szűrése.
-- **Utolsó felvétel újrapróbálása** a menüből, ha a feldolgozás hibára futott (csak memóriában tartjuk).
+- **Utolsó felvétel újrapróbálása** a menüből és az Előzményekből. A sikertelen, üres és megszakadt diktálás is megmarad; a hang csak ezen a Macen, és csak az Újra gombra megy el a szolgáltatónak.
 - **Értékelés:** `BNFlow --eval local|llm|audio|all --label X` → `eval/results/`.
 
 Opcionális **meeting-jegyzetelő** (Google Meet): lásd `docs/MEETINGS.md`.

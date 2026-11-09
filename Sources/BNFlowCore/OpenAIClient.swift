@@ -28,6 +28,21 @@ public enum FlowError: Error, Equatable, Sendable {
         default: return "Hiba"
         }
     }
+    /// Naplóba írható név. A kapcsolt szöveget (pl. hibakód) szándékosan elhagyja, mert abban kulcs vagy válaszrészlet lehet.
+    public var logName: String {
+        switch self {
+        case .noAPIKey: return "noAPIKey"
+        case .unauthorized: return "unauthorized"
+        case .quota: return "quota"
+        case .rateLimit: return "rateLimit"
+        case .tooLarge: return "tooLarge"
+        case .badRequest: return "badRequest"
+        case .server: return "server"
+        case .network: return "network"
+        case .emptyResult: return "emptyResult"
+        case .timeout: return "timeout"
+        }
+    }
     var retryable: Bool { [.rateLimit, .server, .network, .timeout].contains(self) }
 }
 
