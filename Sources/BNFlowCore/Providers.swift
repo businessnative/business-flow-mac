@@ -59,6 +59,25 @@ public enum AIProvider: String, Codable, CaseIterable, Sendable {
     public static var transcribers: [AIProvider] { allCases.filter(\.canTranscribe) }
 }
 
+/// Átírási keret/kvóta üzenet. Egy szolgáltató nevét kiírja; ha mindkettő elhasalt, mindkettőt.
+public enum TranscriptionLimitCopy {
+    public static func message(providers: [AIProvider]) -> String {
+        var names: [String] = []
+        for p in providers where p.canTranscribe && !names.contains(p.short) { names.append(p.short) }
+        let whereTo: String
+        if names.isEmpty || (names.contains("OpenAI") && names.contains("Gemini")) {
+            whereTo = "az OpenAI vagy a Gemini"
+        } else if names == ["Gemini"] {
+            whereTo = "a Gemini"
+        } else if names.count == 1 {
+            whereTo = "az \(names[0])"
+        } else {
+            whereTo = names.map { $0 == "Gemini" ? "a \($0)" : "az \($0)" }.joined(separator: " vagy ")
+        }
+        return "Elfogyott az átírás kerete. Nézd meg \(whereTo) számlázását."
+    }
+}
+
 /// A szolgáltatónkénti kulcsok egy hívás idejére (soha nem naplózzuk).
 public struct ProviderKeys: Sendable, Equatable {
     public var values: [AIProvider: String]

@@ -50,6 +50,14 @@ final class DictationController {
         var polishReady: UInt64?
     }
     private var spec: SpecJob?
+    /// Az átíró hibajelző másik szálról is írhat.
+    private final class LimitProviders: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [AIProvider] = []
+        func add(_ p: AIProvider) { lock.lock(); values.append(p); lock.unlock() }
+        var names: [AIProvider] { lock.lock(); defer { lock.unlock() }; return values }
+    }
+
     /// A teljes feldolgozás (átírás + formázás + beillesztés) felső korlátja.
     static var processingTimeout: Double = 45
     /// Ennyi ideig tartó feldolgozás után egy új gyorsbillentyű-nyomás megszakítja az elakadt feldolgozást.
@@ -460,7 +468,7 @@ final class DictationController {
 
     private func logTrace(finalizeMs: Int, transcribeWait: Int, overlapped: Int, cleanupMs: Int, pasteMs: Int, stopMark: UInt64, speculated: Bool, bytes: Int) {
         let post = stopMark == 0 ? finalizeMs + transcribeWait + cleanupMs + pasteMs : Int((DispatchTime.now().uptimeNanoseconds &- stopMark) / 1_000_000)
-        let trace = DictationTrace(finalizeMs: finalizeMs, transcribeWait: transcribeWait, overlappedMs: overlapped, cleanupMs: cleanupMs, pasteMs: pasteMs, postSpeechMs: post, speculated: speculated, bytes: bytes)
+        let trace = DictationTrace(finalizeMs: finalizeMs, transcribeWaitMs: transcribeWait, overlappedMs: overlapped, cleanupMs: cleanupMs, pasteMs: pasteMs, postSpeechMs: post, speculated: speculated, bytes: bytes)
         FlowLog.flow.info("\(trace.logLine, privacy: .public)")
     }
 
@@ -472,7 +480,12 @@ final class DictationController {
         let allTerms = terms + Array(TextRules.contextNames(context).prefix(20))
         if E2E.delayBeforeTranscribe > 0 { try? await Task.sleep(nanoseconds: UInt64(E2E.delayBeforeTranscribe * 1e9)) }
         if Task.isCancelled { return }
-        AIRouter.onFailure = { p, e in FlowLog.flow.error("átírás hiba [\(p.rawValue, privacy: .public)]: \(String(String(describing: e).prefix(160)), privacy: .public)") }
+        let limitProviders = LimitProviders()
+        AIRouter.onFailure = { p, e in
+            if e == .quota || e == .rateLimit { limitProviders.add(p) }
+            // Csak a hiba típusa. A válasz törzse kulcsot vagy számlázási azonosítót tartalmazhat.
+            FlowLog.flow.error("átírás hiba [\(p.rawValue, privacy: .public)]: \(String(describing: e), privacy: .public)")
+        }
         let ident = transcriptionIdentity(s)
         let id = TranscriptRequestID.make(wav: wav, provider: s.transcriptionProvider.rawValue, model: ident.model, fallback: ident.fallback, language: s.language.rawValue, terms: allTerms)
         let mark = stopMark == 0 ? DispatchTime.now().uptimeNanoseconds : stopMark
@@ -485,10 +498,15 @@ final class DictationController {
         guard case .success(let rawT) = resolved.result else {
             if case .failure(let e) = resolved.result {
                 logTrace(finalizeMs: finalizeMs, transcribeWait: transcribeWait, overlapped: resolved.overlapped, cleanupMs: 0, pasteMs: 0, stopMark: mark, speculated: resolved.speculated, bytes: wav.count)
-                FlowLog.flow.error("átírás sikertelen: \(e.short, privacy: .public)")
+                FlowLog.flow.error("átírás sikertelen: \(String(describing: e), privacy: .public)")
                 if e == .emptyResult { flash(.notice("Nem hallottam semmit")) } else {
                     lastFailedAudio = (wav, seconds, kind, stats)
-                    showError(e.short, detail: e.message + " A felvétel megmaradt: menü → „Utolsó felvétel újrapróbálása”.")
+                    if e == .quota || e == .rateLimit {
+                        let msg = TranscriptionLimitCopy.message(providers: limitProviders.names)
+                        showError(msg, detail: msg + " A felvétel megmaradt: menü → „Utolsó felvétel újrapróbálása”.", after: 6)
+                    } else {
+                        showError(e.short, detail: e.message + " A felvétel megmaradt: menü → „Utolsó felvétel újrapróbálása”.")
+                    }
                 }
             }
             return
@@ -647,10 +665,10 @@ final class DictationController {
 
     private(set) var lastErrorDetail: String?
 
-    func showError(_ short: String, detail: String) {
+    func showError(_ short: String, detail: String, after: Double = 3.5) {
         lastErrorDetail = detail
         play(.error)
-        flash(.error(short), after: 3.5)
+        flash(.error(short), after: after)
         NSLog("Business Flow: %@", detail)
     }
 

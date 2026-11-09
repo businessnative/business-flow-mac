@@ -92,6 +92,7 @@ A becslés közelítő (a magyar szöveg tokenszáma, a szótár/környezet hoss
 - Átírás: OpenAI vagy Gemini; szövegtisztítás: OpenAI, Claude vagy Gemini – a Beállításokban választható, a modellek a Haladó fülön átírhatók.
 - A kulcsok **csak a saját Maceden**, géphez kötött titkosított fájlban vannak (`~/Library/Application Support/Business Flow/keys.enc`, 0600). Nem kerülnek repóba, naplóba vagy felhőbe.
 - A hang és a szöveg csak a te kulcsoddal, közvetlenül a választott szolgáltatóhoz megy. Előzmények helyben: `~/Library/Application Support/Business Flow/`.
+- Ha a szolgáltatónál elfogy a keret vagy a kredit (pl. OpenAI `insufficient_quota`, Gemini `RESOURCE_EXHAUSTED`), az állapotsáv ezt írja ki: *„Elfogyott az átírás kerete. Nézd meg az OpenAI vagy a Gemini számlázását.”* – ilyenkor a saját [OpenAI](https://platform.openai.com/settings/organization/billing) vagy [Gemini](https://aistudio.google.com/usage) fiókodban kell keretet feltölteni.
 
 ## Funkciók
 

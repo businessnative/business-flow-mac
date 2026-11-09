@@ -151,19 +151,42 @@ public final class OpenAIClient: @unchecked Sendable {
         }
     }
 
+    /// A válaszból csak osztályozáshoz használt szövegek. A nyers törzs nem kerül a hibába és nem naplózható.
+    static func errorSignals(_ json: Any) -> [String] {
+        var out: [String] = []
+        func walk(_ v: Any) {
+            if let s = v as? String { out.append(s) }
+            else if let n = v as? Int { out.append(String(n)) }
+            else if let d = v as? [String: Any] { d.values.forEach(walk) }
+            else if let a = v as? [Any] { a.forEach(walk) }
+        }
+        walk(json)
+        return out
+    }
+
+    /// Kvota, számlázás, insufficient_quota, vagy 429 RESOURCE_EXHAUSTED (OpenAI és Gemini).
+    public static func isAccountLimit(status: Int, signals: [String]) -> Bool {
+        if status == 402 { return true }
+        let blob = signals.joined(separator: " ").lowercased()
+        let markers = ["insufficient_quota", "resource_exhausted", "credit_balance", "billing", "quota"]
+        guard markers.contains(where: { blob.contains($0) }) else { return false }
+        return status == 400 || status == 402 || status == 403 || status == 429
+    }
+
     public static func mapError(status: Int, body: Data?) -> FlowError {
         let json = (body.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]) ?? [:]
         let err = json["error"] as? [String: Any]
         let code = (err?["code"] as? String) ?? (err?["type"] as? String) ?? ""
         let param = (err?["param"] as? String) ?? ""
+        let signals = errorSignals(json)
+        if isAccountLimit(status: status, signals: signals) { return .quota }
         if status == 400 || status == 404 || status == 422 {
             let token = param.isEmpty ? code : "\(code) \(param)"
             return .badRequest(token)
         }
         switch status {
         case 401, 403: return .unauthorized
-        case 402: return .quota
-        case 429: return (code.contains("insufficient_quota") || code.contains("credit_balance")) ? .quota : .rateLimit
+        case 429: return .rateLimit
         case 413: return .tooLarge
         default: return .server
         }
