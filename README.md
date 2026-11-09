@@ -6,6 +6,8 @@ Natív Swift (SwiftUI + AppKit), SwiftPM-mel épül; Xcode nem kell, a Command L
 > **Közösségi kiadás – BYOK (saját kulccsal).** Nincs beépített API-kulcs, közös kredit, köztes szerver, analitika vagy telemetria.
 > Mindenki a **saját** OpenAI / Gemini (és opcionálisan Anthropic) kulcsát adja meg; az app közvetlenül a szolgáltatót hívja. Lásd `SECURITY.md`.
 
+További kiadások: [iPhone](https://github.com/businessnative/business-flow-ios) · [Windows + macOS asztali](https://github.com/businessnative/business-flow-windows).
+
 ## Telepítés AI-ügynökkel (Claude Code, Cursor, Codex …)
 
 Add oda ezt a repót az AI-ügynöködnek ezzel a kéréssel: *„Telepítsd a Business Flow Mac appot a README »Telepítés AI-ügynökkel« része szerint.”* Az ügynök lépései:
